@@ -35,8 +35,10 @@
 
 struct file_name {
 	struct file_name *next;
-	unsigned char L;
-	char name[];
+	unsigned char nL;
+	char *n;
+	unsigned char rL;
+	char *r;
 };
 
 int prepare_regex(regex_t*);
@@ -50,37 +52,27 @@ int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L)
 	ssize_t r;
 	size_t len;
 
-	len = *L + (*L ? 1 : 0);
-
-	printf("memmove %lu %lu\n", len, bufsize - len);
-	printf("memset @%lu %lu\n", bufsize - len, len);
+	len = *L + (buf != *top ? 1 : 0);
 	memmove(buf, buf + len, bufsize - len);
 	memset(buf + (bufsize - len), 0, len);
 	*top -= len;
-	printf("read @%lu %lu\n", *top - buf, bufsize - (*top - buf));
 	if ((r = read(fd, *top, bufsize - (*top - buf)))) {
 		*top += r;
 	}
 	else if (*top == buf) {
 		return 1;
 	}
-
-	if ((end = memchr(buf, '\r', bufsize))) {
-		/* TODO */
-	}
-	else if ((end = memchr(buf, '\n', bufsize))) {
-		/* TODO */
-	}
-	else if ((end = memchr(buf, '\0', bufsize))) {
-		/* TODO */
+	if (
+	   (end = memchr(buf, '\r', bufsize))
+	|| (end = memchr(buf, '\n', bufsize))
+	|| (end = memchr(buf, '\0', bufsize))
+	) {
 	}
 	else {
-		end = buf+bufsize;
+		end = buf+bufsize-1;
 	}
 	*end = 0;
 	*L = end - buf;
-	printf("L = %lu\n", *L);
-	printf("top = %lu\n", *top - buf);
 	return 0;
 }
 
@@ -95,6 +87,7 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	size_t L;
 	const size_t nmatch = 1;
 	regmatch_t pmatch[nmatch];
+	DIR *D;
 
 	if ((e = regcomp(&R, str, REG_EXTENDED))) {
 		errbufn = regerror(e, &R, errbuf, sizeof(errbuf));
@@ -103,20 +96,23 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 		return e;
 	}
 	*H = 0;
-	DIR *D = opendir(dir);
+	D = opendir(dir);
 	while ((ent = readdir(D))) {
 		L = strnlen(ent->d_name, NAME_MAX);
-		if ((L == 1 && ent->d_name[0] == '.')
-		|| (L == 2 && ent->d_name[0] == '.' && ent->d_name[1] == '.')) {
+		if (
+		   (L == 1 && ent->d_name[0] == '.')
+		|| (L == 2 && ent->d_name[0] == '.' && ent->d_name[1] == '.')
+		|| (REG_NOMATCH == regexec(&R, ent->d_name, nmatch, pmatch, 0))
+		) {
 			continue;
 		}
-		if (REG_NOMATCH == regexec(&R, ent->d_name, nmatch, pmatch, 0)) {
-			continue;
-		}
-		N = malloc(sizeof(struct file_name)+L+1);
+		N = malloc(sizeof(struct file_name));
 		N->next = *H;
-		N->L = L;
-		memcpy(N->name, ent->d_name, L+1);
+		N->nL = L;
+		N->n = malloc(L+1);
+		memcpy(N->n, ent->d_name, L+1);
+		N->rL = 0;
+		N->r = 0;
 		*H = N;
 	}
 	closedir(D);
@@ -136,6 +132,7 @@ int spawn(int eargc, char *eargv[eargc+1])
 {
 	pid_t p;
 	int wstatus = 0;
+
 	p = fork();
 	if (p == -1) {
 		return errno;
@@ -157,22 +154,19 @@ int spawn(int eargc, char *eargv[eargc+1])
 
 int main(int argc, char *argv[])
 {
-
-	char buf[1024];
-	memset(buf, 0, sizeof(buf));
-	char *top = buf;
-	size_t L = 0;
-	while (!xgetline(0, sizeof(buf), buf, &top, &L)) {
-		printf("[%s]\n", buf);
-	}
-	return 0;
-
 	char *progname,
 	     *current_arg,
-	     *file_regex = 0;
-	struct file_name *fn_list;
-	char tmpname[32];
-	pid_t my_pid = getpid();
+	     *file_regex = 0,
+	     tmpname[32],
+	     buf[80] = { 0 },
+	     *top = buf,
+	     *eargv[3];
+	struct file_name *fn_list,
+			 *i,
+			 *tmp;
+	size_t L = 0;
+	int tmpfd;
+	pid_t my_pid;
 
 	progname = argv[0];
 	if (argc == 1) {
@@ -199,27 +193,48 @@ int main(int argc, char *argv[])
 	}
 	file_regex = *argv;
 	if (file_regex) {
+		my_pid = getpid();
 		gather_matching_files(file_regex, ".", &fn_list);
 		snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", my_pid);
-		int tmpfd = creat(tmpname, 0600);
-		for (struct file_name *i = fn_list; i; i = i->next) {
-			write(tmpfd, i->name, i->L);
+		tmpfd = creat(tmpname, 0600);
+		for (i = fn_list; i; i = i->next) {
+			write(tmpfd, i->n, i->nL);
 			write(tmpfd, "\n", 1);
 		}
-		char *eargv[3] = {
-			getenv("EDITOR"),
-			tmpname,
-			0
-		};
 		close(tmpfd);
+
+		eargv[0] = getenv("EDITOR");
+		eargv[1] = tmpname;
+		eargv[2] = 0;
 		spawn(2, eargv);
+
 		tmpfd = open(tmpname, 0600);
-
-		/* readline ... */
-
+		for (i = fn_list; i; i = i->next) {
+			if (!xgetline(tmpfd, sizeof(buf), buf, &top, &L)) {
+				i->rL = L;
+				i->r = malloc(L+1);
+				memcpy(i->r, buf, L+1);
+			}
+			else {
+				fprintf(stderr, "error: missing lines\n");
+				exit(EXIT_FAILURE);
+			}
+		}
 		close(tmpfd);
 		unlink(tmpname);
-		printf("ok\n");
+
+		for (i = fn_list; i; i = i->next) {
+			printf("%d'%s' -> %d'%s'\n", i->nL, i->n, i->rL, i->r);
+		}
+
+		i = fn_list;
+		while (i) {
+			tmp = i;
+			i = i->next;
+			free(tmp->n);
+			free(tmp->r);
+			free(tmp);
+		}
 	}
 	return 0;
 }
