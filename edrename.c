@@ -30,6 +30,7 @@
 
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/uio.h>
 
 #include <regex.h>
 
@@ -102,6 +103,7 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	}
 	*H = 0;
 	D = opendir(dir);
+	errno = 0;
 	while ((ent = readdir(D))) {
 		L = strnlen(ent->d_name, NAME_MAX);
 		if (
@@ -119,6 +121,9 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 		N->rL = 0;
 		N->r = 0;
 		*H = N;
+	}
+	if ((e = errno)) {
+		fprintf(stderr, "readdir(): %s\n", strerror(e));
 	}
 	closedir(D);
 	regfree(&R);
@@ -160,14 +165,14 @@ char *basename(char *p)
 	return P;
 }
 
-void usage(char *progname)
+void usage(char *argv0)
 {
-	printf("Usage: %s REGEXP\n", progname);
+	printf("Usage: %s REGEXP\n", basename(argv0));
 }
 
 int main(int argc, char *argv[])
 {
-	char *progname,
+	char *argv0,
 	     *file_regex = 0,
 	     tmpname[64],
 	     buf[PATH_MAX] = { 0 },
@@ -177,33 +182,36 @@ int main(int argc, char *argv[])
 	size_t L = 0;
 	int tmpfd, e;
 	unsigned num_selected = 0, num_renamed = 0;
-	pid_t my_pid;
+	struct iovec iov[2] = {
+		{ 0, 0 },
+		{ "\n", 1 },
+	};
 
-	progname = basename(argv[0]);
+	argv0 = argv[0];
 	if (argc == 1) {
-		usage(progname);
+		usage(argv0);
 		return 0;
 	}
 	argv++;
 	file_regex = *argv;
 	if (!file_regex) {
-		usage(progname);
-		exit(EXIT_SUCCESS);
+		usage(argv0);
+		return 0;
 	}
 	gather_matching_files(file_regex, ".", &fn_list);
 	if (!fn_list) {
 		printf("no matching files\n");
-		exit(EXIT_SUCCESS);
+		return 0;
 	}
 	/* TODO sort these files */
 
-	my_pid = getpid();
-	snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", my_pid);
+	snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", getpid());
 
 	tmpfd = creat(tmpname, 0600);
 	for (i = fn_list; i; i = i->next) {
-		write(tmpfd, i->n, i->nL);
-		write(tmpfd, "\n", 1);
+		iov[0].iov_base = i->n;
+		iov[0].iov_len = i->nL;
+		writev(tmpfd, iov, 2);
 	}
 	close(tmpfd);
 
@@ -213,7 +221,7 @@ int main(int argc, char *argv[])
 	if ((e = spawn(eargv))) {
 		fprintf(stderr, "error: failed to spawn '%s': %s\n",
 			eargv[0], strerror(e));
-		exit(EXIT_FAILURE);
+		return 1;
 	}
 
 	tmpfd = open(tmpname, 0600);
@@ -229,29 +237,29 @@ int main(int argc, char *argv[])
 			fprintf(stderr, "error: missing lines\n");
 			close(tmpfd);
 			unlink(tmpname);
-			exit(EXIT_FAILURE);
+			return 1;
 		}
 		i = i->next;
 	}
 	close(tmpfd);
 	unlink(tmpname);
 
+	eargv[0] = "/usr/bin/env";
+	eargv[1] = "mv";
+	eargv[2] = "-vi";
+	eargv[3] = "--";
+	eargv[6] = 0;
 	for (i = fn_list; i; i = i->next) {
 		num_selected++;
 		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
 			continue;
 		}
-		eargv[0] = "/usr/bin/env";
-		eargv[1] = "mv";
-		eargv[2] = "-vi";
-		eargv[3] = "--";
 		eargv[4] = i->n;
 		eargv[5] = i->r;
-		eargv[6] = 0;
 		if ((e = spawn(eargv))) {
 			fprintf(stderr, "error: failed to spawn '%s': %s\n",
 				eargv[0], strerror(e));
-			exit(EXIT_FAILURE);
+			return 1;
 		}
 		num_renamed++;
 	}
