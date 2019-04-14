@@ -22,30 +22,32 @@
 #include <stdio.h>
 
 #include <unistd.h>
-#include <string.h>
 #include <fcntl.h>
 #include <dirent.h>
-#include <sys/types.h>
 #include <limits.h>
-#include <sys/wait.h>
+#include <string.h>
 #include <errno.h>
-//#include <stdint.h>
+
+#include <sys/types.h>
+#include <sys/wait.h>
 
 #include <regex.h>
 
 struct file_name {
 	struct file_name *next;
-	unsigned char nL;
+	short nL;
+	short rL;
 	char *n;
-	unsigned char rL;
 	char *r;
 };
 
+int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L);
 int prepare_regex(regex_t*);
 int gather_matching_files(char*, char*, struct file_name**);
+int spawn(int eargc, char *eargv[eargc+1]);
 void usage(char*);
-int spawn(int, char*[]);
 
+/* TODO simplify */
 int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L)
 {
 	char *end;
@@ -62,11 +64,15 @@ int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L)
 	else if (*top == buf) {
 		return 1;
 	}
-	if (
-	   (end = memchr(buf, '\r', bufsize))
-	|| (end = memchr(buf, '\n', bufsize))
-	|| (end = memchr(buf, '\0', bufsize))
-	) {
+	if ((end = memchr(buf, '\r', bufsize))) {
+		if ((size_t)(end-buf+1) <= bufsize && *(end+1) == '\n') {
+ 			/* TODO TEST */
+			*end = 0;
+			end++;
+		}
+	}
+	else if ((end = memchr(buf, '\n', bufsize))
+	|| (end = memchr(buf, '\0', bufsize))) {
 	}
 	else {
 		end = buf+bufsize-1;
@@ -79,14 +85,13 @@ int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L)
 int gather_matching_files(char *str, char *dir, struct file_name **H)
 {
 	regex_t R;
-	int e;
-	char errbuf[1024];
-	size_t errbufn;
-	struct dirent *ent;
-	struct file_name *N;
-	size_t L;
 	const size_t nmatch = 1;
 	regmatch_t pmatch[nmatch];
+	int e;
+	char errbuf[1024];
+	size_t errbufn, L;
+	struct dirent *ent;
+	struct file_name *N;
 	DIR *D;
 
 	if ((e = regcomp(&R, str, REG_EXTENDED))) {
@@ -120,14 +125,6 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	return 0;
 }
 
-void usage(char *progname)
-{
-	printf("Usage: %s [OPTIONS] REGEXP\n"
-	"Options:\n"
-	"\t-h\tDisplay this message and exit.\n"
-	"\n", progname);
-}
-
 int spawn(int eargc, char *eargv[eargc+1])
 {
 	pid_t p;
@@ -142,99 +139,132 @@ int spawn(int eargc, char *eargv[eargc+1])
 		exit(EXIT_FAILURE);
 	}
 	else {
-		waitpid(p, &wstatus, 0);
+		if (-1 == waitpid(p, &wstatus, 0)) {
+			return errno;
+		}
 		if (WIFEXITED(wstatus)) {
 			return WEXITSTATUS(wstatus);
 		}
 		else {
-			return -1;
+			return -1; /* TODO */
 		}
 	}
+}
+
+char *basename(char *p)
+{
+	char *P = p;
+	while (*P) P++;
+	while (P != p && *P != '/') P--;
+	if (*P == '/') P++;
+	return P;
+}
+
+void usage(char *progname)
+{
+	printf("Usage: %s REGEXP\n", progname);
 }
 
 int main(int argc, char *argv[])
 {
 	char *progname,
-	     *current_arg,
 	     *file_regex = 0,
-	     tmpname[32],
-	     buf[80] = { 0 },
+	     tmpname[64],
+	     buf[PATH_MAX] = { 0 },
 	     *top = buf,
-	     *eargv[3];
-	struct file_name *fn_list,
-			 *i,
-			 *tmp;
+	     *eargv[8];
+	struct file_name *fn_list, *i, *tmp;
 	size_t L = 0;
-	int tmpfd;
+	int tmpfd, e;
+	unsigned num_selected = 0, num_renamed = 0;
 	pid_t my_pid;
 
-	progname = argv[0];
+	progname = basename(argv[0]);
 	if (argc == 1) {
 		usage(progname);
 		return 0;
 	}
 	argv++;
-	while (*argv && **argv == '-') {
-		current_arg = *argv;
-		++*argv;
-		switch (**argv) {
-		case 0:
-			break;
-		case 'h':
-			usage(progname);
-			return 0;
-		/*unrecognized_argument:*/
-		default:
-			fprintf(stderr, "error: Unrecognized option: %s\n", current_arg);
-			usage(progname);
-			return 1;
-		}
-		argv++;
-	}
 	file_regex = *argv;
-	if (file_regex) {
-		my_pid = getpid();
-		gather_matching_files(file_regex, ".", &fn_list);
-		snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", my_pid);
-		tmpfd = creat(tmpname, 0600);
-		for (i = fn_list; i; i = i->next) {
-			write(tmpfd, i->n, i->nL);
-			write(tmpfd, "\n", 1);
-		}
-		close(tmpfd);
-
-		eargv[0] = getenv("EDITOR");
-		eargv[1] = tmpname;
-		eargv[2] = 0;
-		spawn(2, eargv);
-
-		tmpfd = open(tmpname, 0600);
-		for (i = fn_list; i; i = i->next) {
-			if (!xgetline(tmpfd, sizeof(buf), buf, &top, &L)) {
-				i->rL = L;
-				i->r = malloc(L+1);
-				memcpy(i->r, buf, L+1);
-			}
-			else {
-				fprintf(stderr, "error: missing lines\n");
-				exit(EXIT_FAILURE);
-			}
-		}
-		close(tmpfd);
-		unlink(tmpname);
-
-		for (i = fn_list; i; i = i->next) {
-			printf("%d'%s' -> %d'%s'\n", i->nL, i->n, i->rL, i->r);
-		}
-
-		i = fn_list;
-		while (i) {
-			tmp = i;
-			i = i->next;
-			free(tmp->n);
-			free(tmp->r);
-			free(tmp);
-		}
+	if (!file_regex) {
+		usage(progname);
+		exit(EXIT_SUCCESS);
 	}
+	gather_matching_files(file_regex, ".", &fn_list);
+	if (!fn_list) {
+		printf("no matching files\n");
+		exit(EXIT_SUCCESS);
+	}
+	/* TODO sort these files */
+
+	my_pid = getpid();
+	snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", my_pid);
+
+	tmpfd = creat(tmpname, 0600);
+	for (i = fn_list; i; i = i->next) {
+		write(tmpfd, i->n, i->nL);
+		write(tmpfd, "\n", 1);
+	}
+	close(tmpfd);
+
+	eargv[0] = getenv("EDITOR");
+	eargv[1] = tmpname;
+	eargv[2] = 0;
+	if ((e = spawn(2, eargv))) {
+		fprintf(stderr, "error: failed to spawn '%s': %s\n",
+			eargv[0], strerror(e));
+		exit(EXIT_FAILURE);
+	}
+
+	tmpfd = open(tmpname, 0600);
+	i = fn_list;
+	while (i) {
+		/* TODO some instructions as comments? */
+		if (!xgetline(tmpfd, sizeof(buf), buf, &top, &L)) {
+			i->rL = L;
+			i->r = malloc(L+1);
+			memcpy(i->r, buf, L+1);
+		}
+		else {
+			fprintf(stderr, "error: missing lines\n");
+			close(tmpfd);
+			unlink(tmpname);
+			exit(EXIT_FAILURE);
+		}
+		i = i->next;
+	}
+	close(tmpfd);
+	unlink(tmpname);
+
+	for (i = fn_list; i; i = i->next) {
+		num_selected++;
+		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
+			continue;
+		}
+		eargv[0] = "/usr/bin/env";
+		eargv[1] = "mv";
+		eargv[2] = "-vi";
+		eargv[3] = "--";
+		eargv[4] = i->n;
+		eargv[5] = i->r;
+		eargv[6] = 0;
+		if ((e = spawn(6, eargv))) {
+			fprintf(stderr, "error: failed to spawn '%s': %s\n",
+				eargv[0], strerror(e));
+			exit(EXIT_FAILURE);
+		}
+		num_renamed++;
+	}
+
+	i = fn_list;
+	while (i) {
+		tmp = i;
+		i = i->next;
+		if (tmp->n) free(tmp->n);
+		if (tmp->r) free(tmp->r);
+		free(tmp);
+	}
+	printf("%d file%s renamed\n", num_renamed,
+		num_renamed == 1 ? "" : "s");
 	return 0;
 }
