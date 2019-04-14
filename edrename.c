@@ -44,7 +44,7 @@ struct file_name {
 int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L);
 int prepare_regex(regex_t*);
 int gather_matching_files(char*, char*, struct file_name**);
-int spawn(int eargc, char *eargv[eargc+1]);
+int spawn(char *eargv[]);
 void usage(char*);
 
 /* TODO simplify */
@@ -96,7 +96,7 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 
 	if ((e = regcomp(&R, str, REG_EXTENDED))) {
 		errbufn = regerror(e, &R, errbuf, sizeof(errbuf));
-		printf("%.*s\n", (int)errbufn, errbuf);
+		fprintf(stderr, "%.*s\n", (int)errbufn, errbuf);
 		regfree(&R);
 		return e;
 	}
@@ -125,7 +125,7 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	return 0;
 }
 
-int spawn(int eargc, char *eargv[eargc+1])
+int spawn(char *eargv[])
 {
 	pid_t p;
 	int wstatus = 0;
@@ -210,7 +210,7 @@ int main(int argc, char *argv[])
 	eargv[0] = getenv("EDITOR");
 	eargv[1] = tmpname;
 	eargv[2] = 0;
-	if ((e = spawn(2, eargv))) {
+	if ((e = spawn(eargv))) {
 		fprintf(stderr, "error: failed to spawn '%s': %s\n",
 			eargv[0], strerror(e));
 		exit(EXIT_FAILURE);
@@ -248,7 +248,7 @@ int main(int argc, char *argv[])
 		eargv[4] = i->n;
 		eargv[5] = i->r;
 		eargv[6] = 0;
-		if ((e = spawn(6, eargv))) {
+		if ((e = spawn(eargv))) {
 			fprintf(stderr, "error: failed to spawn '%s': %s\n",
 				eargv[0], strerror(e));
 			exit(EXIT_FAILURE);
