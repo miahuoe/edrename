@@ -42,45 +42,67 @@ struct file_name {
 	char *r;
 };
 
-int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L);
+int xgetline(int, char*, size_t, char *[2]);
 int prepare_regex(regex_t*);
 int gather_matching_files(char*, char*, struct file_name**);
 int spawn(char *eargv[]);
 void usage(char*);
 
-/* TODO simplify */
-int xgetline(int fd, size_t bufsize, char buf[bufsize], char **top, size_t *L)
+/* TODO test other line endings */
+/*
+ * xgetline() returns:
+ * -2   -> error
+ * -1   -> no more lines
+ * 0 <= -> line length (may be 0)
+ */
+int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 {
-	char *end;
+	char *src, *dst;
+	size_t s;
 	ssize_t r;
-	size_t len;
+	int i, L = 0;
 
-	len = *L + (buf != *top ? 1 : 0);
-	memmove(buf, buf + len, bufsize - len);
-	memset(buf + (bufsize - len), 0, len);
-	*top -= len;
-	if ((r = read(fd, *top, bufsize - (*top - buf)))) {
-		*top += r;
+	src = b[0];
+	dst = buf;
+	i = s = b[1] - b[0];
+	/* Move next lines to the very begining, having covered old line */
+	while (i--) {
+		*dst++ = *src++;
 	}
-	else if (*top == buf) {
-		return 1;
-	}
-	if ((end = memchr(buf, '\r', bufsize))) {
-		if ((size_t)(end-buf+1) <= bufsize && *(end+1) == '\n') {
- 			/* TODO TEST */
-			*end = 0;
-			end++;
+	/* New values */
+	b[0] = buf;
+	b[1] = buf + s;
+
+	for (;;) {
+		/* Find newline */
+		while (*b[0] != '\n' && *b[0] != '\r' && b[1] - b[0] > 0) {
+			b[0]++;
+		}
+		/* If it was found */
+		if (b[1] - b[0] > 0 && (*b[0] == '\n' || *b[0] == '\r')) {
+			L = b[0] - buf;
+			break;
+		}
+		/* If it was NOT found or ran out of buffer data */
+		else {
+			r = read(fd, b[1], bufs-(b[1]-buf));
+			if (r == -1) {
+				return -2;
+			}
+			if (r == 0) {
+				return -1;
+			}
+			b[1] += r;
 		}
 	}
-	else if ((end = memchr(buf, '\n', bufsize))
-	|| (end = memchr(buf, '\0', bufsize))) {
+	/* NULL terminator */
+	*b[0] = 0;
+	b[0]++;
+	if (b[1] - b[0] > 0 && (*b[0] == '\n' || *b[0] == '\r')) {
+		*b[0] = 0;
+		b[0]++;
 	}
-	else {
-		end = buf+bufsize-1;
-	}
-	*end = 0;
-	*L = end - buf;
-	return 0;
+	return L;
 }
 
 int gather_matching_files(char *str, char *dir, struct file_name **H)
@@ -175,11 +197,11 @@ int main(int argc, char *argv[])
 	char *argv0,
 	     *file_regex = 0,
 	     tmpname[64],
-	     buf[PATH_MAX] = { 0 },
-	     *top = buf,
 	     *eargv[8];
+	char buf[PATH_MAX] = { 0 };
+	char *b[2] = { buf, buf };
 	struct file_name *fn_list, *i, *tmp;
-	size_t L = 0;
+	int L = 0;
 	int tmpfd, e;
 	unsigned num_selected = 0, num_renamed = 0;
 	struct iovec iov[2] = {
@@ -228,7 +250,7 @@ int main(int argc, char *argv[])
 	i = fn_list;
 	while (i) {
 		/* TODO some instructions as comments? */
-		if (!xgetline(tmpfd, sizeof(buf), buf, &top, &L)) {
+		if (0 < (L = xgetline(tmpfd, buf, sizeof(buf), b))) {
 			i->rL = L;
 			i->r = malloc(L+1);
 			memcpy(i->r, buf, L+1);
