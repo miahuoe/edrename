@@ -49,6 +49,7 @@ void err(const char*, ...);
 int xgetline(int, char*, size_t, char *[2]);
 int gather_matching_files(char*, int, char*, struct file_name**);
 int gather_fd(int, struct file_name**);
+void file_name_free(struct file_name*);
 int spawn(char *eargv[]);
 char *basename(char*);
 void usage(char*);
@@ -65,6 +66,7 @@ void err(const char *fmt, ...)
 	exit(EXIT_FAILURE);
 }
 
+#define XGETLINE_GETERRNO(R) (0x0000ffff & R)
 /*
  * xgetline() returns:
  * -2   -> error
@@ -103,7 +105,7 @@ int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 		else {
 			r = read(fd, b[1], bufs-(b[1]-buf));
 			if (r == -1) {
-				return -2;
+				return 0xffff0000 | errno;
 			}
 			if (r == 0) {
 				return -1;
@@ -136,8 +138,7 @@ int gather_matching_files(char *str, int cflags, char *dir, struct file_name **H
 	if ((e = regcomp(&R, str, cflags))) {
 		errbufn = regerror(e, &R, errbuf, sizeof(errbuf));
 		fprintf(stderr, "%.*s\n", (int)errbufn, errbuf);
-		regfree(&R);
-		return e;
+		return -1;
 	}
 	*H = 0;
 	D = opendir(dir);
@@ -160,12 +161,10 @@ int gather_matching_files(char *str, int cflags, char *dir, struct file_name **H
 		N->r = 0;
 		*H = N;
 	}
-	if ((e = errno)) {
-		fprintf(stderr, "readdir(): %s\n", strerror(e));
-	}
+	e = errno;
 	closedir(D);
 	regfree(&R);
-	return 0;
+	return e;
 }
 
 int gather_fd(int fd, struct file_name **H)
@@ -177,8 +176,8 @@ int gather_fd(int fd, struct file_name **H)
 
 	*H = 0;
 	while (0 <= (L = xgetline(fd, line, sizeof(line), b))) {
-		if (
-		   (L == 1 && line[0] == '.')
+		if (!L
+		|| (L == 1 && line[0] == '.')
 		|| (L == 2 && line[0] == '.' && line[1] == '.')
 		) {
 			continue;
@@ -192,7 +191,19 @@ int gather_fd(int fd, struct file_name **H)
 		N->r = 0;
 		*H = N;
 	}
-	return 0;
+	return L < -1 ? XGETLINE_GETERRNO(L) : 0;
+}
+
+void file_name_free(struct file_name *i)
+{
+	struct file_name *tmp;
+	while (i) {
+		tmp = i;
+		i = i->next;
+		if (tmp->n) free(tmp->n);
+		if (tmp->r) free(tmp->r);
+		free(tmp);
+	}
 }
 
 int spawn(char *eargv[])
@@ -286,15 +297,13 @@ int main(int argc, char *argv[])
 	     *eargv[8];
 	char buf[PATH_MAX] = { 0 };
 	char *b[2] = { buf, buf };
-	struct file_name *fn_list, *i, *tmp;
-	int L = 0;
+	struct file_name *fn_list, *i;
+	int L = 0, ret = 0;
 	int tmpfd, e, cflags = 0;
 	unsigned num_selected = 0, num_renamed = 0;
-	struct iovec iov[2] = {
-		{ 0, 0 },
-		{ "\n", 1 },
-	};
+	struct iovec iov[2] = { { 0, 0 }, { "\n", 1 } };
 	_Bool mid = 0, from_stdin = 0;
+
 	(void)argc;
 
 	argv0 = *argv;
@@ -327,17 +336,19 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
-	if (from_stdin) {
-		gather_fd(0, &fn_list);
-	}
-	else {
-		gather_matching_files(file_regex, cflags, ".", &fn_list);
+	e = from_stdin
+		? gather_fd(0, &fn_list)
+		: gather_matching_files(file_regex, cflags, ".", &fn_list);
+	if (e > 0) {
+		fprintf(stderr, "error: %s\n", strerror(e));
+		ret = 1;
+		goto fail_cleanup;
 	}
 	if (!fn_list) {
 		printf("no matching files\n");
 		return 0;
 	}
-	/* TODO sort these files */
+	/* TODO sort these files? */
 
 	snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", getpid());
 
@@ -355,10 +366,18 @@ int main(int argc, char *argv[])
 	if ((e = spawn(eargv))) {
 		fprintf(stderr, "error: failed to spawn '%s': %s\n",
 			eargv[0], strerror(e));
-		return 1;
+		ret = 1;
+		goto fail_cleanup;
 	}
 
 	tmpfd = open(tmpname, 0600);
+	if (tmpfd == -1) {
+		e = errno;
+		fprintf(stderr, "error: failed to open '%s': %s\n",
+			tmpname, strerror(e));
+		ret = 1;
+		goto fail_cleanup;
+	}
 	i = fn_list;
 	while (i) {
 		/* TODO some instructions as comments? */
@@ -367,11 +386,20 @@ int main(int argc, char *argv[])
 			i->r = malloc(L+1);
 			memcpy(i->r, buf, L+1);
 		}
-		else {
+		else if (L == -1) {
 			fprintf(stderr, "error: missing lines\n");
 			close(tmpfd);
 			unlink(tmpname);
-			return 1;
+			ret = 1;
+			goto fail_cleanup;
+		}
+		else {
+			fprintf(stderr, "error: %s\n",
+				strerror(XGETLINE_GETERRNO(L)));
+			close(tmpfd);
+			unlink(tmpname);
+			ret = 1;
+			goto fail_cleanup;
 		}
 		i = i->next;
 	}
@@ -393,20 +421,16 @@ int main(int argc, char *argv[])
 		if ((e = spawn(eargv))) {
 			fprintf(stderr, "error: failed to spawn '%s': %s\n",
 				eargv[0], strerror(e));
-			return 1;
+			ret = 1;
+			goto fail_cleanup;
 		}
 		num_renamed++;
 	}
 
-	i = fn_list;
-	while (i) {
-		tmp = i;
-		i = i->next;
-		if (tmp->n) free(tmp->n);
-		if (tmp->r) free(tmp->r);
-		free(tmp);
-	}
 	printf("%d file%s renamed\n", num_renamed,
 		num_renamed == 1 ? "" : "s");
-	return 0;
+
+	fail_cleanup:
+	file_name_free(fn_list);
+	return ret;
 }
