@@ -1,5 +1,5 @@
 # edrename
-Offers similar functionality to ranger's bulkrename from terminal alone.
+Offers similar functionality to [ranger](https://ranger.github.io/)'s bulkrename from terminal alone.
 
 # License
-MIT
+ISC (openBSD)
