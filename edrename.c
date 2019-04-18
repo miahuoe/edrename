@@ -20,6 +20,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 #include <unistd.h>
 #include <fcntl.h>
@@ -34,6 +35,8 @@
 
 #include <regex.h>
 
+#define NO_ARG do { ++*argv; if (!(mid = **argv)) argv++; } while (0)
+
 struct file_name {
 	struct file_name *next;
 	short nL;
@@ -42,13 +45,26 @@ struct file_name {
 	char *r;
 };
 
+void err(const char*, ...);
 int xgetline(int, char*, size_t, char *[2]);
-int prepare_regex(regex_t*);
-int gather_matching_files(char*, char*, struct file_name**);
+int gather_matching_files(char*, int, char*, struct file_name**);
+int gather_fd(int, struct file_name**);
 int spawn(char *eargv[]);
+char *basename(char*);
 void usage(char*);
+char *ARG(char***);
+char* EARG(char***);
 
-/* TODO test other line endings */
+void err(const char *fmt, ...)
+{
+	va_list a;
+
+	va_start(a, fmt);
+	vdprintf(2, fmt, a);
+	va_end(a);
+	exit(EXIT_FAILURE);
+}
+
 /*
  * xgetline() returns:
  * -2   -> error
@@ -105,7 +121,7 @@ int xgetline(int fd, char *buf, size_t bufs, char *b[2])
 	return L;
 }
 
-int gather_matching_files(char *str, char *dir, struct file_name **H)
+int gather_matching_files(char *str, int cflags, char *dir, struct file_name **H)
 {
 	regex_t R;
 	const size_t nmatch = 1;
@@ -117,7 +133,7 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	struct file_name *N;
 	DIR *D;
 
-	if ((e = regcomp(&R, str, REG_EXTENDED))) {
+	if ((e = regcomp(&R, str, cflags))) {
 		errbufn = regerror(e, &R, errbuf, sizeof(errbuf));
 		fprintf(stderr, "%.*s\n", (int)errbufn, errbuf);
 		regfree(&R);
@@ -149,6 +165,33 @@ int gather_matching_files(char *str, char *dir, struct file_name **H)
 	}
 	closedir(D);
 	regfree(&R);
+	return 0;
+}
+
+int gather_fd(int fd, struct file_name **H)
+{
+	int L;
+	char line[PATH_MAX];
+	char *b[2] = { line, line };
+	struct file_name *N;
+
+	*H = 0;
+	while (0 <= (L = xgetline(fd, line, sizeof(line), b))) {
+		if (
+		   (L == 1 && line[0] == '.')
+		|| (L == 2 && line[0] == '.' && line[1] == '.')
+		) {
+			continue;
+		}
+		N = malloc(sizeof(struct file_name));
+		N->next = *H;
+		N->nL = L;
+		N->n = malloc(L+1);
+		memcpy(N->n, line, L+1);
+		N->rL = 0;
+		N->r = 0;
+		*H = N;
+	}
 	return 0;
 }
 
@@ -189,9 +232,52 @@ char *basename(char *p)
 
 void usage(char *argv0)
 {
-	printf("Usage: %s REGEXP\n", basename(argv0));
+	fprintf(stderr, "Usage: %s [-ieEh]\n", basename(argv0));
+	fprintf(stderr,
+	"Options:\n"
+	"    -i         Read file list from stdin.\n"
+	"    -e REGEXP  Filter files in current directory using POSIX regex.\n"
+	"    -E REGEXP  Filter files in the current directory using extended regex.\n"
+	"    -h         Display this message and exit.\n"
+	);
 }
 
+char *ARG(char ***argv)
+{
+	char *r = 0;
+
+	(**argv)++;
+	if (***argv) { /* -oARG */
+		r = **argv;
+		(*argv)++;
+	}
+	else { /* -o ARG */
+		(*argv)++;
+		if (**argv && ***argv != '-') {
+			r = **argv;
+			(*argv)++;
+		}
+	}
+	return r;
+}
+
+char* EARG(char ***argv)
+{
+	char *a;
+	a = ARG(argv);
+	if (!a) {
+		err("ERROR: Expected argument.\n");
+	}
+	return a;
+}
+
+/* TODO
+ * Arguments:
+ * - enable extended REGEXP
+ * - read filenames from stdin
+ * - line endings
+ * - $EDITOR vs $VISUAL
+ */
 int main(int argc, char *argv[])
 {
 	char *argv0,
@@ -202,25 +288,51 @@ int main(int argc, char *argv[])
 	char *b[2] = { buf, buf };
 	struct file_name *fn_list, *i, *tmp;
 	int L = 0;
-	int tmpfd, e;
+	int tmpfd, e, cflags = 0;
 	unsigned num_selected = 0, num_renamed = 0;
 	struct iovec iov[2] = {
 		{ 0, 0 },
 		{ "\n", 1 },
 	};
+	_Bool mid = 0, from_stdin = 0;
+	(void)argc;
 
-	argv0 = argv[0];
-	if (argc == 1) {
-		usage(argv0);
-		return 0;
+	argv0 = *argv;
+	++argv;
+	while ((mid && **argv) || (*argv && **argv == '-')) {
+		if (!mid) ++*argv;
+		mid = 0;
+		if ((*argv)[0] == '-' && (*argv)[1] == 0) {
+			argv++;
+			break;
+		}
+		switch (**argv) {
+		case 'i':
+			from_stdin = 1;
+			NO_ARG;
+			break;
+		case 'e':
+			file_regex = EARG(&argv);
+			break;
+		case 'E':
+			file_regex = EARG(&argv);
+			cflags |= REG_EXTENDED;
+			break;
+		case 'h':
+			usage(argv0);
+			NO_ARG;
+			return 0;
+		default:
+			usage(argv0);
+			return 1;
+		}
 	}
-	argv++;
-	file_regex = *argv;
-	if (!file_regex) {
-		usage(argv0);
-		return 0;
+	if (from_stdin) {
+		gather_fd(0, &fn_list);
 	}
-	gather_matching_files(file_regex, ".", &fn_list);
+	else {
+		gather_matching_files(file_regex, cflags, ".", &fn_list);
+	}
 	if (!fn_list) {
 		printf("no matching files\n");
 		return 0;
