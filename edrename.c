@@ -243,11 +243,13 @@ char *basename(char *p)
 
 void usage(char *argv0)
 {
-	fprintf(stderr, "Usage: %s [-ieEh]\n", basename(argv0));
+	fprintf(stderr, "Usage: %s", basename(argv0));
 	fprintf(stderr,
+	" [-ih] [-d DIR] [-eE REGEX]\n"
 	"Options:\n"
 	"    -i         Read file list from stdin.\n"
-	"    -e REGEXP  Filter files in current directory using POSIX regex.\n"
+	"    -d DIR     When using regex, search in DIR instead.\n"
+	"    -e REGEXP  Filter files in the current directory using POSIX regex.\n"
 	"    -E REGEXP  Filter files in the current directory using extended regex.\n"
 	"    -h         Display this message and exit.\n"
 	);
@@ -284,8 +286,6 @@ char* EARG(char ***argv)
 
 /* TODO
  * Arguments:
- * - enable extended REGEXP
- * - read filenames from stdin
  * - line endings
  * - $EDITOR vs $VISUAL
  */
@@ -294,7 +294,8 @@ int main(int argc, char *argv[])
 	char *argv0,
 	     *file_regex = 0,
 	     tmpname[64],
-	     *eargv[8];
+	     *eargv[8],
+	     *dir = ".";
 	char buf[PATH_MAX] = { 0 };
 	char *b[2] = { buf, buf };
 	struct file_name *fn_list, *i;
@@ -320,6 +321,9 @@ int main(int argc, char *argv[])
 			from_stdin = 1;
 			NO_ARG;
 			break;
+		case 'd':
+			dir = EARG(&argv);
+			break;
 		case 'e':
 			file_regex = EARG(&argv);
 			break;
@@ -336,9 +340,13 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 	}
+	if (!from_stdin && !file_regex) {
+		usage(argv0);
+		goto fail_cleanup;
+	}
 	e = from_stdin
 		? gather_fd(0, &fn_list)
-		: gather_matching_files(file_regex, cflags, ".", &fn_list);
+		: gather_matching_files(file_regex, cflags, dir, &fn_list);
 	if (e > 0) {
 		fprintf(stderr, "error: %s\n", strerror(e));
 		ret = 1;
@@ -406,6 +414,7 @@ int main(int argc, char *argv[])
 	close(tmpfd);
 	unlink(tmpname);
 
+	chdir(dir);
 	eargv[0] = "/usr/bin/env";
 	eargv[1] = "mv";
 	eargv[2] = "-vi";
