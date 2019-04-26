@@ -220,16 +220,13 @@ int spawn(char *eargv[])
 		exit(EXIT_FAILURE);
 	}
 	else {
-		if (-1 == waitpid(p, &wstatus, 0)) {
-			return errno;
-		}
-		if (WIFEXITED(wstatus)) {
-			return WEXITSTATUS(wstatus);
-		}
-		else {
-			return -1; /* TODO */
-		}
+		do {
+			if (-1 == (w = waitpid(p, &wstatus, 0))) {
+				return errno;
+			}
+		} while (!WIFEXITED(wstatus));
 	}
+	return 0;
 }
 
 char *basename(char *p)
