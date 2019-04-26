@@ -366,6 +366,9 @@ int main(int argc, char *argv[])
 	close(tmpfd);
 
 	eargv[0] = getenv("EDITOR");
+	if (!eargv[0]) {
+		eargv[0] = getenv("VISUAL");
+	}
 	eargv[1] = tmpname;
 	eargv[2] = 0;
 	if ((e = spawn(eargv))) {
