@@ -221,7 +221,7 @@ int spawn(char *eargv[])
 	}
 	else {
 		do {
-			if (-1 == (w = waitpid(p, &wstatus, 0))) {
+			if (-1 == waitpid(p, &wstatus, 0)) {
 				return errno;
 			}
 		} while (!WIFEXITED(wstatus));
@@ -353,7 +353,6 @@ int main(int argc, char *argv[])
 		printf("no matching files\n");
 		return 0;
 	}
-	/* TODO sort these files? */
 
 	snprintf(tmpname, sizeof(tmpname), "/tmp/edrename.%d", getpid());
 
@@ -388,7 +387,6 @@ int main(int argc, char *argv[])
 	}
 	i = fn_list;
 	while (i) {
-		/* TODO some instructions as comments? */
 		if (0 < (L = xgetline(tmpfd, buf, sizeof(buf), b))) {
 			i->rL = L;
 			i->r = malloc(L+1);
