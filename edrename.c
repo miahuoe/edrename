@@ -55,6 +55,8 @@ char *basename(char*);
 void usage(char*);
 char *ARG(char***);
 char* EARG(char***);
+int mvcp(char*, char*, struct file_name*);
+int mvcp_output(char*, char*, struct file_name*);
 
 void err(const char *fmt, ...)
 {
@@ -248,6 +250,7 @@ void usage(char *argv0)
 	"    -d DIR     When using regex, search in DIR instead.\n"
 	"    -e REGEXP  Filter files in the current directory using POSIX regex.\n"
 	"    -E REGEXP  Filter files in the current directory using extended regex.\n"
+	"    -o         Do not rename. Just output commands to stdout.\n"
 	"    -h         Display this message and exit.\n"
 	);
 }
@@ -281,6 +284,55 @@ char* EARG(char ***argv)
 	return a;
 }
 
+int mvcp(char *cmd, char *dir, struct file_name *fn_list)
+{
+	int e, ret = 0;
+	char *eargv[8];
+	struct file_name *i;
+	unsigned num_proc = 0;
+
+	chdir(dir);
+	eargv[0] = "/usr/bin/env";
+	eargv[1] = cmd;
+	eargv[2] = "-vi";
+	eargv[3] = "--";
+	eargv[6] = 0;
+	for (i = fn_list; i; i = i->next) {
+		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
+			continue;
+		}
+		eargv[4] = i->n;
+		eargv[5] = i->r;
+		if ((e = spawn(eargv))) {
+			fprintf(stderr, "error: failed to spawn '%s': %s\n",
+				eargv[0], strerror(e));
+			ret = 1;
+			goto fail;
+		}
+		num_proc++;
+	}
+
+	printf("%d file%s processed\n", num_proc,
+		num_proc == 1 ? "" : "s");
+	fail:
+	return ret;
+}
+
+int mvcp_output(char *cmd, char *dir, struct file_name *fn_list)
+{
+	struct file_name *i;
+
+	for (i = fn_list; i; i = i->next) {
+		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
+			continue;
+		}
+		dprintf(1, "%s -vi -- '%s/%s' '%s/%s'\n",
+			cmd, dir, i->n, dir, i->r);
+		/* TODO escape ' */
+	}
+	return 0;
+}
+
 /* TODO
  * Arguments:
  * - line endings
@@ -298,9 +350,8 @@ int main(int argc, char *argv[])
 	struct file_name *fn_list, *i;
 	int L = 0, ret = 0;
 	int tmpfd, e, cflags = 0;
-	unsigned num_selected = 0, num_renamed = 0;
 	struct iovec iov[2] = { { 0, 0 }, { "\n", 1 } };
-	_Bool mid = 0, from_stdin = 0;
+	_Bool mid = 0, from_stdin = 0, just_output = 0;
 
 	(void)argc;
 
@@ -316,6 +367,10 @@ int main(int argc, char *argv[])
 		switch (**argv) {
 		case 'i':
 			from_stdin = 1;
+			NO_ARG;
+			break;
+		case 'o':
+			just_output = 1;
 			NO_ARG;
 			break;
 		case 'd':
@@ -412,30 +467,12 @@ int main(int argc, char *argv[])
 	close(tmpfd);
 	unlink(tmpname);
 
-	chdir(dir);
-	eargv[0] = "/usr/bin/env";
-	eargv[1] = "mv";
-	eargv[2] = "-vi";
-	eargv[3] = "--";
-	eargv[6] = 0;
-	for (i = fn_list; i; i = i->next) {
-		num_selected++;
-		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
-			continue;
-		}
-		eargv[4] = i->n;
-		eargv[5] = i->r;
-		if ((e = spawn(eargv))) {
-			fprintf(stderr, "error: failed to spawn '%s': %s\n",
-				eargv[0], strerror(e));
-			ret = 1;
-			goto fail_cleanup;
-		}
-		num_renamed++;
+	if (just_output) {
+		ret = mvcp_output("mv", dir, fn_list);
 	}
-
-	printf("%d file%s renamed\n", num_renamed,
-		num_renamed == 1 ? "" : "s");
+	else {
+		ret = mvcp("mv", dir, fn_list);
+	}
 
 	fail_cleanup:
 	file_name_free(fn_list);
