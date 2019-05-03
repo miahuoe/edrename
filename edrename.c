@@ -57,6 +57,7 @@ char *ARG(char***);
 char* EARG(char***);
 int mvcp(char*, char*, struct file_name*);
 int mvcp_output(char*, char*, struct file_name*);
+void quot(size_t, char [PATH_MAX]);
 
 void err(const char *fmt, ...)
 {
@@ -287,7 +288,7 @@ char* EARG(char ***argv)
 
 int mvcp(char *cmd, char *dir, struct file_name *fn_list)
 {
-	int e, ret = 0;
+	int e;
 	char *eargv[8];
 	struct file_name *i;
 	unsigned num_proc = 0;
@@ -307,31 +308,50 @@ int mvcp(char *cmd, char *dir, struct file_name *fn_list)
 		if ((e = spawn(eargv))) {
 			fprintf(stderr, "error: failed to spawn '%s': %s\n",
 				eargv[0], strerror(e));
-			ret = 1;
-			goto fail;
+			return 1;
 		}
 		num_proc++;
 	}
 
 	printf("%d file%s processed\n", num_proc,
 		num_proc == 1 ? "" : "s");
-	fail:
-	return ret;
+	return 0;
 }
 
 int mvcp_output(char *cmd, char *dir, struct file_name *fn_list)
 {
 	struct file_name *i;
+	char nb[PATH_MAX];
+	char rb[PATH_MAX];
 
 	for (i = fn_list; i; i = i->next) {
 		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
 			continue;
 		}
-		dprintf(1, "%s -vi -- '%s/%s' '%s/%s'\n",
-			cmd, dir, i->n, dir, i->r);
-		/* TODO escape ' */
+		snprintf(nb, sizeof(nb), "%s/%s", dir, i->n);
+		quot(sizeof(nb), nb);
+
+		snprintf(rb, sizeof(rb), "%s/%s", dir, i->r);
+		quot(sizeof(rb), rb);
+
+		dprintf(1, "%s -vi -- '%s' '%s'\n", cmd, nb, rb);
 	}
 	return 0;
+}
+
+
+void quot(size_t bufs, char *buf)
+{
+	int i, j;
+
+	for (i = 0; i < (int)bufs && buf[i]; i++) {
+		if (buf[i] != '\'') continue;
+		for (j = bufs; j > i; j--) {
+			buf[j] = buf[j-1];
+		}
+		buf[i] = '\\';
+		i++;
+	}
 }
 
 /* TODO
