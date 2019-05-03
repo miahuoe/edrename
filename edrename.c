@@ -244,14 +244,15 @@ void usage(char *argv0)
 {
 	fprintf(stderr, "Usage: %s", basename(argv0));
 	fprintf(stderr,
-	" [-ih] [-d DIR] [-eE REGEX]\n"
+	" [-chio] [-d DIR] [-eE REGEX]\n"
 	"Options:\n"
-	"    -i         Read file list from stdin.\n"
+	"    -c         Copy instead of renaming.\n"
 	"    -d DIR     When using regex, search in DIR instead.\n"
 	"    -e REGEXP  Filter files in the current directory using POSIX regex.\n"
 	"    -E REGEXP  Filter files in the current directory using extended regex.\n"
-	"    -o         Do not rename. Just output commands to stdout.\n"
 	"    -h         Display this message and exit.\n"
+	"    -i         Read file list from stdin.\n"
+	"    -o         Just output commands to stdout.\n"
 	);
 }
 
@@ -352,6 +353,7 @@ int main(int argc, char *argv[])
 	int tmpfd, e, cflags = 0;
 	struct iovec iov[2] = { { 0, 0 }, { "\n", 1 } };
 	_Bool mid = 0, from_stdin = 0, just_output = 0;
+	char mode = 'm';
 
 	(void)argc;
 
@@ -365,6 +367,10 @@ int main(int argc, char *argv[])
 			break;
 		}
 		switch (**argv) {
+		case 'c':
+			mode = 'c';
+			NO_ARG;
+			break;
 		case 'i':
 			from_stdin = 1;
 			NO_ARG;
@@ -467,11 +473,23 @@ int main(int argc, char *argv[])
 	close(tmpfd);
 	unlink(tmpname);
 
-	if (just_output) {
-		ret = mvcp_output("mv", dir, fn_list);
-	}
-	else {
-		ret = mvcp("mv", dir, fn_list);
+	switch (mode) {
+	case 'm':
+		if (just_output) {
+			ret = mvcp_output("mv", dir, fn_list);
+		}
+		else {
+			ret = mvcp("mv", dir, fn_list);
+		}
+		break;
+	case 'c':
+		if (just_output) {
+			ret = mvcp_output("cp", dir, fn_list);
+		}
+		else {
+			ret = mvcp("cp", dir, fn_list);
+		}
+		break;
 	}
 
 	fail_cleanup:
