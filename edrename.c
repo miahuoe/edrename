@@ -292,8 +292,9 @@ int mvcp(char *cmd, char *dir, struct file_name *fn_list)
 	char *eargv[8];
 	struct file_name *i;
 	unsigned num_proc = 0;
+	char a[PATH_MAX];
+	char b[PATH_MAX];
 
-	chdir(dir);
 	eargv[0] = "/usr/bin/env";
 	eargv[1] = cmd;
 	eargv[2] = "-vi";
@@ -303,8 +304,10 @@ int mvcp(char *cmd, char *dir, struct file_name *fn_list)
 		if (i->nL == i->rL && !memcmp(i->n, i->r, i->nL+1)) {
 			continue;
 		}
-		eargv[4] = i->n;
-		eargv[5] = i->r;
+		snprintf(a, sizeof(a), "%s/%s", dir, i->n);
+		snprintf(b, sizeof(b), "%s/%s", dir, i->r);
+		eargv[4] = a;
+		eargv[5] = b;
 		if ((e = spawn(eargv))) {
 			fprintf(stderr, "error: failed to spawn '%s': %s\n",
 				eargv[0], strerror(e));
@@ -355,7 +358,6 @@ void quot(size_t bufs, char *buf)
 }
 
 /* TODO
- * Arguments:
  * - line endings
  * - $EDITOR vs $VISUAL
  */
